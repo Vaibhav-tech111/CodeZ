@@ -1,0 +1,262 @@
+name: Kotlin Multiplatform + Android Auto Builder & Publisher
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_name:
+        description: "Kotlin Multiplatform project name"
+        required: true
+        default: "MyKMPAndroidProject"
+      kotlin_version:
+        description: "Kotlin version"
+        required: false
+        default: "1.9.24"
+      agp_version:
+        description: "Android Gradle Plugin version"
+        required: false
+        default: "8.1.2"
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Accept Android Licenses
+        run: yes | sdkmanager --licenses || true
+
+      - name: Install Android SDK Build Tools
+        run: sdkmanager "build-tools;34.0.0" "platforms;android-34"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+
+      - name: Detect next semantic version
+        id: version
+        run: |
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          IFS='.' read -r MAJ MIN PATCH <<< "${LATEST_TAG#v}"
+          PATCH=$((PATCH + 1))
+          NEXT_VERSION="v${MAJ}.${MIN}.${PATCH}"
+          echo "NEXT_VERSION=$NEXT_VERSION" >> $GITHUB_ENV
+          echo "next_version=$NEXT_VERSION" >> $GITHUB_OUTPUT
+          echo "Detected version: $NEXT_VERSION"
+
+      - name: Initialize KMP Android project (if empty)
+        run: |
+          PROJECT="${{ github.event.inputs.project_name }}"
+          KOTLIN_VERSION="${{ github.event.inputs.kotlin_version }}"
+          AGP_VERSION="${{ github.event.inputs.agp_version }}"
+
+          if [ ! -d "$PROJECT" ]; then
+            mkdir -p "$PROJECT"
+            cd "$PROJECT"
+
+            # Root Gradle settings
+            cat > settings.gradle.kts <<EOF
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+rootProject.name = "$PROJECT"
+include(":app")
+EOF
+
+            # Root Gradle build file
+            cat > build.gradle.kts <<EOF
+plugins {
+    kotlin("multiplatform") version "$KOTLIN_VERSION"
+    id("com.android.library") version "$AGP_VERSION"
+    \`maven-publish\`
+}
+
+group = "com.github.${{ github.repository_owner }}"
+version = System.getenv("NEXT_VERSION") ?: "0.0.1"
+
+kotlin {
+    androidTarget()
+    jvm()
+    js(IR) { browser(); nodejs() }
+
+    sourceSets {
+        val commonMain by getting {
+            dependencies { implementation(kotlin("stdlib")) }
+        }
+        val commonTest by getting {
+            dependencies { implementation(kotlin("test")) }
+        }
+    }
+}
+
+android {
+    namespace = "com.example.${PROJECT.lowercase()}"
+    compileSdk = 34
+    defaultConfig { minSdk = 24 }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+publishing {
+    repositories {
+        maven {
+            name = "GitHubPackages"
+            url = uri("https://maven.pkg.github.com/${{ github.repository }}")
+            credentials {
+                username = System.getenv("GITHUB_ACTOR")
+                password = System.getenv("GITHUB_TOKEN")
+            }
+        }
+    }
+    publications {
+        create<MavenPublication>("release") {
+            from(components["android"])
+            pom {
+                name.set("$PROJECT")
+                description.set("Auto-generated Kotlin Multiplatform Android library")
+                url.set("https://github.com/${{ github.repository }}")
+            }
+        }
+    }
+}
+EOF
+
+            # App module
+            mkdir -p app/src/main/java/com/example/app
+            cat > app/build.gradle.kts <<EOF
+plugins {
+    id("com.android.application")
+    kotlin("android") version "$KOTLIN_VERSION"
+}
+
+android {
+    namespace = "com.example.${PROJECT.lowercase()}.app"
+    compileSdk = 34
+    defaultConfig {
+        applicationId = "com.example.${PROJECT.lowercase()}.app"
+        minSdk = 24
+        targetSdk = 34
+        versionCode = 1
+        versionName = "1.0"
+    }
+    buildTypes {
+        release { isMinifyEnabled = false }
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation(project(":"))
+}
+EOF
+
+            cat > app/src/main/java/com/example/app/MainActivity.kt <<EOF
+package com.example.app
+
+import android.app.Activity
+import android.os.Bundle
+import android.widget.TextView
+
+class MainActivity : Activity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val textView = TextView(this)
+        textView.text = "Hello from Android App in Kotlin Multiplatform!"
+        setContentView(textView)
+    }
+}
+EOF
+            echo "✅ Created new Android KMP + App project: $PROJECT"
+            cd ..
+          else
+            echo "ℹ️ Project folder '$PROJECT' already exists, skipping initialization."
+          fi
+
+      - name: Initialize Gradle Wrapper
+        run: |
+          cd ${{ github.event.inputs.project_name }}
+          gradle wrapper --gradle-version=8.1 || true
+          chmod +x gradlew
+
+      - name: Validate Gradle Environment
+        run: |
+          cd ${{ github.event.inputs.project_name }}
+          ./gradlew tasks
+
+      - name: Build Library & App
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd ${{ github.event.inputs.project_name }}
+          export NEXT_VERSION="${NEXT_VERSION:-v0.0.1}"
+          ./gradlew clean assembleDebug assembleRelease publish --no-daemon --stacktrace
+
+      - name: Generate CHANGELOG
+        id: changelog
+        run: |
+          echo "## ${{ env.NEXT_VERSION }}" > CHANGELOG.md
+          echo "Generated at $(date)" >> CHANGELOG.md
+          git log -n 10 --pretty=format:"- %s (%an)" >> CHANGELOG.md || true
+
+      - name: Tag & push release version
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${NEXT_VERSION}" -m "Release ${NEXT_VERSION}" || true
+          git push origin "${NEXT_VERSION}" || true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.NEXT_VERSION }}
+          name: "Release ${{ env.NEXT_VERSION }}"
+          body_path: CHANGELOG.md
+          files: |
+            ${{ github.event.inputs.project_name }}/app/build/outputs/apk/debug/*.apk
+            ${{ github.event.inputs.project_name }}/app/build/outputs/apk/release/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Build-Artifacts
+          path: |
+            ${{ github.event.inputs.project_name }}/build/libs/
+            ${{ github.event.inputs.project_name }}/build/outputs/
+            ${{ github.event.inputs.project_name }}/app/build/outputs/apk/
