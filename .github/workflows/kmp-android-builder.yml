@@ -1,462 +1,90 @@
-name: Kotlin Multiplatform + Android Auto Builder & Publisher
+name: Generated APK AAB (Upload - Create Artifact To Github Action)
 
-# Trigger manually with customizable inputs
+env:
+
+The name of the main module repository
+
+main_project_module: app
+
+The name of the Play Store
+
+playstore_name: IIECat
+
 on:
-  workflow_dispatch:
-    inputs:
-      project_name:
-        description: "Kotlin Multiplatform project name"
-        required: true
-        default: "MyKMPAndroidProject"
-      kotlin_version:
-        description: "Kotlin version"
-        required: false
-        default: "1.9.24"
-      agp_version:
-        description: "Android Gradle Plugin version"
-        required: false
-        default: "8.1.2"
+#Where release is writen , must match your branch name , I would suggest cloning your branch  at the end called release so it only builds the final code called release
+push:
+branches:
+- 'release'
 
-# Required permissions for publishing to GitHub Packages and creating releases
-permissions:
-  contents: write
-  packages: write
-  id-token: write
+Allows you to run this workflow manually from the Actions tab
+
+workflow_dispatch:
 
 jobs:
-  build-and-publish:
-    runs-on: ubuntu-latest
+build:
 
-    steps:
-      # 1. Checkout the repository
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # Needed for git describe
+runs-on: ubuntu-latest  
 
-      # 2. Set up Java (required for Gradle & Android)
-      - name: Setup JDK
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
+steps:  
+  - uses: actions/checkout@v3  
 
-      # 3. Set up Android SDK
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+  # Set Current Date As Env Variable  
+  - name: Set current date as env variable  
+    run: echo "date_today=$(date +'%Y-%m-%d')" >> $GITHUB_ENV  
 
-      # 4. Accept Android licenses (non-interactive)
-      - name: Accept Android Licenses
-        run: yes | sdkmanager --licenses || true
+  # Set Repository Name As Env Variable  
+  - name: Set repository name as env variable  
+    run: echo "repository_name=$(echo '${{ github.repository }}' | awk -F '/' '{print $2}')" >> $GITHUB_ENV  
 
-      # 5. Install required SDK components
-      - name: Install Android SDK Build Tools
-        run: sdkmanager "build-tools;34.0.0" "platforms;android-34"
+  - name: Set Up JDK  
+    uses: actions/setup-java@v3  
+    with:  
+      distribution: 'zulu' # See 'Supported distributions' for available options  
+      java-version: '17'  
+      cache: 'gradle'  
 
-      # 6. Set up Gradle with caching support
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
+  - name: Change wrapper permissions  
+    run: chmod +x ./gradlew  
 
-      # 7. Cache Gradle dependencies for faster builds
-      - name: Cache Gradle dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+  # Run Tests Build  
+  - name: Run gradle tests  
+    run: ./gradlew test  
 
-      # 8. Auto-detect next semantic version from Git tags
-      - name: Detect next semantic version
-        id: version
-        run: |
-          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-          IFS='.' read -r MAJ MIN PATCH <<< "${LATEST_TAG#v}"
-          PATCH=$((PATCH + 1))
-          NEXT_VERSION="v${MAJ}.${MIN}.${PATCH}"
-          echo "NEXT_VERSION=$NEXT_VERSION" >> $GITHUB_ENV
-          echo "next_version=$NEXT_VERSION" >> $GITHUB_OUTPUT
-          echo "Detected version: $NEXT_VERSION"
+  # Run Build Project  
+  - name: Build gradle project  
+    run: ./gradlew build  
 
-      # 9. Initialize KMP project if it doesn't exist
-      - name: Initialize KMP Android project (if empty)
-        run: |
-          PROJECT="${{ github.event.inputs.project_name }}"
-          KOTLIN_VERSION="${{ github.event.inputs.kotlin_version }}"
-          AGP_VERSION="${{ github.event.inputs.agp_version }}"
+  # Create APK Debug  
+  - name: Build apk debug project (APK) - ${{ env.main_project_module }} module  
+    run: ./gradlew assembleDebug  
 
-          if [ ! -d "$PROJECT" ]; then
-            mkdir -p "$PROJECT"
-            cd "$PROJECT"
+  # Create APK Release  
+  - name: Build apk release project (APK) - ${{ env.main_project_module }} module  
+    run: ./gradlew assemble  
 
-            # settings.gradle.kts
-            cat > settings.gradle.kts <<EOF
-pluginManagement {
-    repositories {
-        google()
-        mavenCentral()
-        gradlePluginPortal()
-    }
-}
-rootProject.name = "$PROJECT"
-include(":app")
-EOF
+  # Create Bundle AAB Release  
+  # Noted for main module build [main_project_module]:bundleRelease  
+  - name: Build app bundle release (AAB) - ${{ env.main_project_module }} module  
+    run: ./gradlew ${{ env.main_project_module }}:bundleRelease  
 
-            # build.gradle.kts (root)
-            # Properly escaped and formatted Kotlin DSL within YAML
-            cat > build.gradle.kts <<EOF
-plugins {
-    kotlin("multiplatform") version "$KOTLIN_VERSION"
-    id("com.android.library") version "$AGP_VERSION"
-    \`maven-publish\`
-}
+  # Upload Artifact Build  
+  # Noted For Output [main_project_module]/build/outputs/apk/debug/  
+  - name: Upload APK Debug - ${{ env.repository_name }}  
+    uses: actions/upload-artifact@v4  
+    with:  
+      name: ${{ env.date_today }} - ${{ env.playstore_name }} - ${{ env.repository_name }} - APK(s) debug generated  
+      path: ${{ env.main_project_module }}/build/outputs/apk/debug/  
 
-group = "com.github.\${{ github.repository_owner }}"
-version = System.getenv("NEXT_VERSION") ?: "0.0.1"
+  # Noted For Output [main_project_module]/build/outputs/apk/release/  
+  - name: Upload APK Release - ${{ env.repository_name }}  
+    uses: actions/upload-artifact@v4  
+    with:  
+      name: ${{ env.date_today }} - ${{ env.playstore_name }} - ${{ env.repository_name }} - APK(s) release generated  
+      path: ${{ env.main_project_module }}/build/outputs/apk/release/  
 
-kotlin {
-    androidTarget()
-    jvm()
-    js(IR) { browser(); nodejs() }
-
-    sourceSets {
-        val commonMain by getting {
-            dependencies { implementation(kotlin("stdlib")) }
-        }
-        val commonTest by getting {
-            dependencies { implementation(kotlin("test")) }
-        }
-    }
-}
-
-android {
-    namespace = "com.example.\${PROJECT.lowercase()}"
-    compileSdk = 34
-    defaultConfig { minSdk = 24 }
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
-    }
-}
-
-publishing {
-    publications {
-        create<MavenPublication>("release") {
-            from(components["android"])
-            pom {
-                name.set("$PROJECT")
-                description.set("Auto-generated Kotlin Multiplatform Android library")
-                url.set("https://github.com/\${{ github.repository }}")
-            }
-        }
-    }
-    repositories {
-        maven {
-            name = "GitHubPackages"
-            url = uri("https://maven.pkg.github.com/\${{ github.repository }}") // Correct URL, no space
-            credentials {
-                username = System.getenv("GITHUB_ACTOR")
-                password = System.getenv("GITHUB_TOKEN")
-            }
-        }
-    }
-}
-EOF
-
-            # App module
-            mkdir -p app/src/main/java/com/example/app
-            cat > app/build.gradle.kts <<EOF
-plugins {
-    id("com.android.application")
-    kotlin("android") version "$KOTLIN_VERSION"
-}
-
-android {
-    namespace = "com.example.\${PROJECT.lowercase()}.app"
-    compileSdk = 34
-    defaultConfig {
-        applicationId = "com.example.\${PROJECT.lowercase()}.app"
-        minSdk = 24
-        targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
-    }
-    buildTypes {
-        release { isMinifyEnabled = false }
-    }
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
-    }
-}
-
-dependencies {
-    implementation(project(":"))
-}
-EOF
-
-            cat > app/src/main/java/com/example/app/MainActivity.kt <<EOF
-package com.example.app
-
-import android.app.Activity
-import android.os.Bundle
-import android.widget.TextView
-
-class MainActivity : Activity() {
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        val textView = TextView(this)
-        textView.text = "Hello from Android App in Kotlin Multiplatform!"
-        setContentView(textView)
-    }
-}
-EOF
-            echo "✅ Created new Android KMP + App project: \$PROJECT"
-            cd ..
-          else
-            echo "ℹ️ Project folder '\$PROJECT' already exists, skipping initialization."
-          fi
-
-      # 10. Generate Gradle wrapper
-      - name: Initialize Gradle Wrapper
-        run: |
-          cd ${{ github.event.inputs.project_name }}
-          # Attempt to run wrapper task via gradlew, fallback to gradle if needed
-          if [ -f "gradlew" ]; then
-              ./gradlew wrapper --gradle-version=8.1
-          else
-              gradle wrapper --gradle-version=8.1
-          fi
-          chmod +x gradlew
-
-      # 11. Validate Gradle setup
-      - name: Validate Gradle Environment
-        run: |
-          cd ${{ github.event.inputs.project_name }}
-          ./gradlew tasks --console=plain
-
-      # 12. Build and publish
-      - name: Build Library & App
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NEXT_VERSION: ${{ env.NEXT_VERSION }} # Pass NEXT_VERSION as environment variable
-        run: |
-          cd ${{ github.event.inputs.project_name }}
-          # Export NEXT_VERSION for Gradle to access via System.getenv()
-          export NEXT_VERSION="${{ env.NEXT_VERSION }}"
-          ./gradlew clean assembleDebug assembleRelease publish --no-daemon --stacktrace
-
-      # 13. Generate changelog
-      - name: Generate CHANGELOG
-        run: |
-          echo "## ${{ env.NEXT_VERSION }}" > CHANGELOG.md
-          echo "Generated at $(date)" >> CHANGELOG.md
-          git log -n 10 --pretty=format:"- %s (%an)" >> CHANGELOG.md || true
-
-      # 14. Tag and push
-      - name: Tag & push release version
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "${{ env.NEXT_VERSION }}" -m "Release ${{ env.NEXT_VERSION }}" || true
-          git push origin "${{ env.NEXT_VERSION }}" || true
-
-      # 15. Create GitHub Release with APKs
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.NEXT_VERSION }}
-          name: "Release ${{ env.NEXT_VERSION }}"
-          body_path: CHANGELOG.md
-          files: |
-            ${{ github.event.inputs.project_name }}/app/build/outputs/apk/debug/*.apk
-            ${{ github.event.inputs.project_name }}/app/build/outputs/apk/release/*.apk
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # 16. Upload build artifacts for debugging
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: Build-Artifacts-${{ env.NEXT_VERSION }}
-          path: |
-            ${{ github.event.inputs.project_name }}/build/libs/
-            ${{ github.event.inputs.project_name }}/build/outputs/
-            ${{ github.event.inputs.project_name }}/app/build/outputs/apk/
-            # build.gradle.kts (root)
-            cat > build.gradle.kts <<EOF
-plugins {
-    kotlin("multiplatform") version "$KOTLIN_VERSION"
-    id("com.android.library") version "$AGP_VERSION"
-    \`maven-publish\`
-}
-
-group = "com.github.${{ github.repository_owner }}"
-version = System.getenv("NEXT_VERSION") ?: "0.0.1"
-
-kotlin {
-    androidTarget()
-    jvm()
-    js(IR) { browser(); nodejs() }
-
-    sourceSets {
-        val commonMain by getting {
-            dependencies { implementation(kotlin("stdlib")) }
-        }
-        val commonTest by getting {
-            dependencies { implementation(kotlin("test")) }
-        }
-    }
-}
-
-android {
-    namespace = "com.example.${PROJECT.lowercase()}"
-    compileSdk = 34
-    defaultConfig { minSdk = 24 }
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
-    }
-}
-
-publishing {
-    repositories {
-        maven {
-            name = "GitHubPackages"
-            url = uri("https://maven.pkg.github.com/${{ github.repository }}")
-            credentials {
-                username = System.getenv("GITHUB_ACTOR")
-                password = System.getenv("GITHUB_TOKEN")
-            }
-        }
-    }
-    publications {
-        create<MavenPublication>("release") {
-            from(components["android"])
-            pom {
-                name.set("$PROJECT")
-                description.set("Auto-generated Kotlin Multiplatform Android library")
-                url.set("https://github.com/${{ github.repository }}")
-            }
-        }
-    }
-}
-EOF
-
-            # App module
-            mkdir -p app/src/main/java/com/example/app
-            cat > app/build.gradle.kts <<EOF
-plugins {
-    id("com.android.application")
-    kotlin("android") version "$KOTLIN_VERSION"
-}
-
-android {
-    namespace = "com.example.${PROJECT.lowercase()}.app"
-    compileSdk = 34
-    defaultConfig {
-        applicationId = "com.example.${PROJECT.lowercase()}.app"
-        minSdk = 24
-        targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
-    }
-    buildTypes {
-        release { isMinifyEnabled = false }
-    }
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
-    }
-}
-
-dependencies {
-    implementation(project(":"))
-}
-EOF
-
-            cat > app/src/main/java/com/example/app/MainActivity.kt <<EOF
-package com.example.app
-
-import android.app.Activity
-import android.os.Bundle
-import android.widget.TextView
-
-class MainActivity : Activity() {
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        val textView = TextView(this)
-        textView.text = "Hello from Android App in Kotlin Multiplatform!"
-        setContentView(textView)
-    }
-}
-EOF
-            echo "✅ Created new Android KMP + App project: $PROJECT"
-            cd ..
-          else
-            echo "ℹ️ Project folder '$PROJECT' already exists, skipping initialization."
-          fi
-
-      # 10. Generate Gradle wrapper
-      - name: Initialize Gradle Wrapper
-        run: |
-          cd ${{ github.event.inputs.project_name }}
-          ./gradlew wrapper --gradle-version=8.1 || gradle wrapper --gradle-version=8.1
-          chmod +x gradlew
-
-      # 11. Validate Gradle setup
-      - name: Validate Gradle Environment
-        run: |
-          cd ${{ github.event.inputs.project_name }}
-          ./gradlew tasks
-
-      # 12. Build and publish
-      - name: Build Library & App
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NEXT_VERSION: ${{ env.NEXT_VERSION }}
-        run: |
-          cd ${{ github.event.inputs.project_name }}
-          ./gradlew clean assembleDebug assembleRelease publish --no-daemon --stacktrace
-
-      # 13. Generate changelog
-      - name: Generate CHANGELOG
-        run: |
-          echo "## ${{ env.NEXT_VERSION }}" > CHANGELOG.md
-          echo "Generated at $(date)" >> CHANGELOG.md
-          git log -n 10 --pretty=format:"- %s (%an)" >> CHANGELOG.md || true
-
-      # 14. Tag and push
-      - name: Tag & push release version
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "${{ env.NEXT_VERSION }}" -m "Release ${{ env.NEXT_VERSION }}" || true
-          git push origin "${{ env.NEXT_VERSION }}" || true
-
-      # 15. Create GitHub Release with APKs
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.NEXT_VERSION }}
-          name: "Release ${{ env.NEXT_VERSION }}"
-          body_path: CHANGELOG.md
-          files: |
-            ${{ github.event.inputs.project_name }}/app/build/outputs/apk/debug/*.apk
-            ${{ github.event.inputs.project_name }}/app/build/outputs/apk/release/*.apk
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # 16. Upload build artifacts for debugging
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: Build-Artifacts
-          path: |
-            ${{ github.event.inputs.project_name }}/build/libs/
-            ${{ github.event.inputs.project_name }}/build/outputs/
-            ${{ github.event.inputs.project_name }}/app/build/outputs/apk/
+  # Noted For Output [main_project_module]/build/outputs/bundle/release/  
+  - name: Upload AAB (App Bundle) Release - ${{ env.repository_name }}  
+    uses: actions/upload-artifact@v4  
+    with:  
+      name: ${{ env.date_today }} - ${{ env.playstore_name }} - ${{ env.repository_name }} - App bundle(s) AAB release generated  
+      path: ${{ env.main_project_module }}/build/outputs/bundle/release/
