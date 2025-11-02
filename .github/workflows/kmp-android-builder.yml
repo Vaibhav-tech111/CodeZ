@@ -78,7 +78,6 @@ jobs:
             mkdir -p "$PROJECT"
             cd "$PROJECT"
 
-            # Root Gradle settings
             cat > settings.gradle.kts <<EOF
 pluginManagement {
     repositories {
@@ -91,7 +90,6 @@ rootProject.name = "$PROJECT"
 include(":app")
 EOF
 
-            # Root Gradle build file
             cat > build.gradle.kts <<EOF
 plugins {
     kotlin("multiplatform") version "$KOTLIN_VERSION"
@@ -151,7 +149,6 @@ publishing {
 }
 EOF
 
-            # App module
             mkdir -p app/src/main/java/com/example/app
             cat > app/build.gradle.kts <<EOF
 plugins {
@@ -256,7 +253,4 @@ EOF
         uses: actions/upload-artifact@v4
         with:
           name: Build-Artifacts
-          path: |
-            ${{ github.event.inputs.project_name }}/build/libs/
-            ${{ github.event.inputs.project_name }}/build/outputs/
-            ${{ github.event.inputs.project_name }}/app/build/outputs/apk/
+          path: ${{ github.event.inputs.project_name }}/build/libs/,${{ github.event.inputs.project_name }}/build/outputs/,${{ github.event.inputs.project_name }}/app/build/outputs/apk/
